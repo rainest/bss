@@ -47,6 +47,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -65,13 +66,6 @@ const (
 )
 
 var blockedRoles []string
-
-// Figure out what server the ipxe boot scripts should reference when chaining
-// to new BSS requests.  This is normally the API gateway.  Allow this to be
-// overridden with the BSS_IPXE_SERVER environment variable.
-var ipxeServer = getEnvVal("BSS_IPXE_SERVER", "api-gw-service-nmn.local")
-var chainProto = getEnvVal("BSS_CHAIN_PROTO", "https")
-var gwURI = getEnvVal("BSS_GW_URI", "/apis/bss")
 
 // Store ptr to S3 client
 var s3Client *hms_s3.S3Client
@@ -97,6 +91,42 @@ func getEnvVal(envVar, defVal string) string {
 		return e
 	}
 	return defVal
+}
+
+const (
+	bssIPXEServerVar = "BSS_IPXE_SERVER"
+	bssChainProtoVar = "BSS_CHAIN_PROTO"
+	bssGatewayURI    = "BSS_GW_URI"
+	bssURLVar        = "BSS_IPXE_URL"
+
+	bssIPXEServerVarDefault  = "api-gw-service-nmn.local"
+	bssChainProtoVarDefault  = "https"
+	bssGatewayURIDefault     = "/apis/bss"
+	bssBootscriptPathDefault = "/boot/v1/bootscript"
+)
+
+// getBootChainString returns a URL for the boot script. This is either the value of the BSS_IPXE_URL envvar or the
+// original BSS_CHAIN_PROTO + BSS_IPXE_SERVER + BSS_GW_URI + "/boot/v1/bootscript" composed URL.
+func getBootChainString() string {
+	fullURL, set := os.LookupEnv(bssURLVar)
+	if !set {
+		// Figure out what server the ipxe boot scripts should reference when chaining
+		// to new BSS requests.  This is normally the API gateway.  Allow this to be
+		// overridden with the BSS_IPXE_SERVER environment variable.
+		ipxeServer := getEnvVal(bssIPXEServerVar, bssIPXEServerVarDefault)
+		chainProto := getEnvVal(bssChainProtoVar, bssGatewayURIDefault)
+		gwURI := getEnvVal(bssGatewayURI, bssGatewayURIDefault)
+
+		defaultURL := url.URL{
+			Scheme: chainProto,
+			Host:   ipxeServer,
+			Path:   path.Join(gwURI, bssBootscriptPathDefault),
+		}
+
+		fullURL = defaultURL.String()
+
+	}
+	return fmt.Sprintf("chain %s", fullURL)
 }
 
 func replaceS3Params(params string, getSignedS3Url signedS3UrlGetter) (newParams string, err error) {
@@ -717,7 +747,7 @@ func unknownBootScript(arch, mac, name string, nid int, ts int64, role string, s
 	debugf("unknownBootScript(%s)", arch)
 	var script string
 	var err error
-	chain := "chain " + chainProto + "://" + ipxeServer + gwURI + "/boot/v1/bootscript"
+	chain := getBootChainString()
 	if mac != "" {
 		chain += "?mac=" + mac
 	} else if name != "" {
@@ -877,7 +907,7 @@ func BootscriptGet(w http.ResponseWriter, r *http.Request) {
 				mac = comp.Mac[0]
 			}
 			sp := scriptParams{comp.ID, comp.NID.String(), bd.ReferralToken}
-			chain := "chain " + chainProto + "://" + ipxeServer + gwURI + r.URL.Path
+			chain := getBootChainString()
 			if mac != "" {
 				chain += "?mac=" + mac
 			} else {
